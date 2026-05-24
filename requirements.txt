@@ -1,1 +1,7 @@
-
+langchain
+langchain-google-genai
+langchain-community
+chromadb
+tavily-python
+streamlit
+python-dotenv
