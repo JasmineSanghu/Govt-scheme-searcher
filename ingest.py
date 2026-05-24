@@ -9,7 +9,7 @@ load_dotenv()
 
 def create_vector_db():
     # 1. Load data
-    loader = TextLoader("schemes.txt")
+    loader = TextLoader("schemes.txt", encoding="utf-8")
     documents = loader.load()
 
     # 2. Split (The NLP/ML part)
