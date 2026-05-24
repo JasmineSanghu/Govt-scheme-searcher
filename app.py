@@ -1,83 +1,67 @@
-import os
 import streamlit as st
+import os
+from dotenv import load_dotenv
 from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
-from langchain_core.documents import Document
-from langchain_text_splitters import CharacterTextSplitter
 from langchain_chroma import Chroma
+from langchain.agents import AgentExecutor, create_react_agent
+from langchain import hub
+from langchain.tools import Tool
+from langchain_community.tools.tavily_search import TavilySearchResults
 
-# 1. API KEY SETUP
-os.environ["GOOGLE_API_KEY"] = "AIzaSyDD8UfglBh_IFdSkN3Rtucl-lGv_uzYtmY"
+load_dotenv()
 
-st.set_page_config(page_title="Govt Scheme Helper", layout="centered")
-st.title("🇮🇳 Govt Scheme Assistant")
+# --- 1. LOAD THE ML ENGINE (ChromaDB) ---
+embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
+vector_db = Chroma(persist_directory="./db", embedding_function=embeddings)
 
-# --- Initialize Application Mode State ---
-if "mode" not in st.session_state:
-    st.session_state.mode = "Local Schemes File"
+# --- 2. DEFINE THE TOOLS (Agentic Logic) ---
+def local_policy_search(query: str):
+    """Searches the local database for government schemes."""
+    docs = vector_db.similarity_search(query, k=3)
+    return "\n\n".join([doc.page_content for doc in docs])
 
-# Sidebar selector to toggle modes smoothly
-st.sidebar.title("Configuration")
-st.session_state.mode = st.sidebar.radio(
-    "Select Search Mode:",
-    ["Local Schemes File", "Live Web Search (Google)"]
-)
+web_search = TavilySearchResults(k=3)
 
-@st.cache_resource
-def load_data():
-    # Safeguard check to ensure local context file exists
-    if not os.path.exists("schemes.txt"):
-        # Creates a placeholder file if it is missing
-        with open("schemes.txt", "w", encoding="utf-8") as f:
-            f.write("Coir Udyami Yojana: Modenizes the coir industry and offers credit-linked subsidies.")
-            
-    with open("schemes.txt", "r", encoding="utf-8") as f:
-        text = f.read()
-    
-    text_splitter = CharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
-    docs = [Document(page_content=x) for x in text_splitter.split_text(text)]
+tools = [
+    Tool(
+        name="Local_Database",
+        func=local_policy_search,
+        description="Best for official government scheme details and eligibility from our internal files."
+    ),
+    Tool(
+        name="Internet_Search",
+        func=web_search.run,
+        description="Best for finding real-time updates, news, or very recent changes in policies."
+    )
+]
 
-    embeddings = GoogleGenerativeAIEmbeddings(model="models/gemini-embedding-001")
-    vectorstore = Chroma.from_documents(docs, embeddings)
-    return vectorstore
+# --- 3. INITIALIZE THE AGENT ---
+llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0)
+prompt = hub.pull("hwchase17/react")  # The logic blueprint for reasoning
+agent = create_react_agent(llm, tools, prompt)
+agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True, handle_parsing_errors=True)
 
-# --- CORE EXECUTION PIPELINE ---
-try:
-    user_query = st.text_input("Ask me about any government scheme:")
+# --- 4. STREAMLIT UI ---
+st.set_page_config(page_title="Agentic Policy AI", page_icon="🏛️")
+st.title("🏛️ Agentic Government Policy Assistant")
 
-    if user_query:
-        # Initialize the underlying Language Model
-        llm = ChatGoogleGenerativeAI(model="gemini-3-flash-preview")
+if "messages" not in st.session_state:
+    st.session_state.messages = []
 
-        if st.session_state.mode == "Local Schemes File":
-            # Execution Route A: Standard Local Vector Search (RAG)
-            db = load_data()
-            search_results = db.similarity_search(user_query, k=2)
-            context = "\n".join([res.page_content for res in search_results])
-            
-            prompt = f"Using this info: {context}, answer: {user_query}. Be helpful."
-            st.write("📂 *Searching your local schemes database...*")
-            response = llm.invoke(prompt)
+# Display Chat History
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
 
-        else:
-            # Execution Route B: Live Web Search Grounding Agent
-            # Attaching Google Search tool natively to the Gemini pipeline
-            llm_with_search = llm.bind_tools([{"google_search": {}}])
-            
-            prompt = f"You are an expert Indian Government Assistant. Use the live google search tool to discover the latest information on: {user_query}. Provide a structured layout and list source URLs."
-            st.write("🌐 *Searching live Indian Government portals via Google...*")
-            response = llm_with_search.invoke(prompt)
+# User Input
+if user_query := st.chat_input("Ask me about any scheme..."):
+    st.session_state.messages.append({"role": "user", "content": user_query})
+    with st.chat_message("user"):
+        st.markdown(user_query)
 
-        # --- REUSABLE PARSING BLOCK ---
-        # Safely extract clean string values out of raw model payload structures
-        if isinstance(response.content, list) and len(response.content) > 0:
-            clean_text = response.content[0].get("text", "")
-        elif isinstance(response.content, dict):
-            clean_text = response.content.get("text", "")
-        else:
-            clean_text = response.content
-
-        st.write("### Answer:")
-        st.markdown(clean_text)
-        
-except Exception as e:
-    st.error(f"Execution Error encountered: {e}")
+    with st.chat_message("assistant"):
+        # The AI now decides which tool to use!
+        response = agent_executor.invoke({"input": user_query})
+        answer = response["output"]
+        st.markdown(answer)
+        st.session_state.messages.append({"role": "assistant", "content": answer})
