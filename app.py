@@ -1,4 +1,6 @@
 import os
+import json
+from datetime import datetime
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -10,6 +12,18 @@ from langchain_core.tools import Tool
 from langchain.agents import AgentExecutor, create_react_agent
 from langchain.prompts import PromptTemplate
 from google import genai
+
+HISTORY_FILE = "search_history.json"
+
+def load_history():
+    if os.path.exists(HISTORY_FILE):
+        with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return []
+
+def save_history(history):
+    with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+        json.dump(history, f, ensure_ascii=False, indent=2)
 
 class GeminiEmbeddings(Embeddings):
     def __init__(self):
@@ -52,6 +66,7 @@ Observation: the result of the action
 Thought: I now know the final answer
 Final Answer: the final answer to the original input question
 Begin!
+Previous searches for context: {previous_searches}
 Question: {input}
 Thought:{agent_scratchpad}"""
     prompt = PromptTemplate.from_template(template)
@@ -60,6 +75,25 @@ Thought:{agent_scratchpad}"""
 
 st.set_page_config(page_title="Govt Policy Assistant", page_icon="🏛️")
 st.title("🏛️ Agentic Government Policy Assistant")
+
+# Load history
+if "search_history" not in st.session_state:
+    st.session_state.search_history = load_history()
+
+# Sidebar with history
+with st.sidebar:
+    st.header("🕘 Search History")
+    if st.session_state.search_history:
+        if st.button("🗑️ Clear History"):
+            st.session_state.search_history = []
+            save_history([])
+            st.rerun()
+        for item in reversed(st.session_state.search_history[-20:]):
+            st.markdown(f"**{item['time']}**")
+            st.markdown(f"🔍 {item['query']}")
+            st.divider()
+    else:
+        st.info("No search history yet.")
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
@@ -74,7 +108,23 @@ if user_query := st.chat_input("Ask me about any government scheme..."):
         st.markdown(user_query)
     with st.chat_message("assistant"):
         agent_executor = load_agent()
-        response = agent_executor.invoke({"input": user_query})
+
+        # Build previous searches context
+        recent = st.session_state.search_history[-5:]
+        previous_searches = ", ".join([h["query"] for h in recent]) if recent else "None"
+
+        response = agent_executor.invoke({
+            "input": user_query,
+            "previous_searches": previous_searches
+        })
         answer = response["output"]
         st.markdown(answer)
         st.session_state.messages.append({"role": "assistant", "content": answer})
+
+        # Save to history
+        entry = {
+            "query": user_query,
+            "time": datetime.now().strftime("%d %b %Y, %I:%M %p")
+        }
+        st.session_state.search_history.append(entry)
+        save_history(st.session_state.search_history)
